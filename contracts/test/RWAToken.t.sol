@@ -35,13 +35,13 @@ contract RWATokenTest is Test {
         );
         token = RWAToken(address(proxy));
 
-        // Setup roles
         vm.startPrank(issuer);
         token.grantRole(AGENT_ROLE, agent);
         token.grantRole(VERIFIER_ROLE, verifier);
         vm.stopPrank();
     }
 
+    // --- Initialization ---
     function test_Initialization() public {
         assertEq(token.name(), "US Treasury Bond Fund");
         assertEq(token.symbol(), "USTB");
@@ -50,12 +50,34 @@ contract RWATokenTest is Test {
         assertEq(token.hasRole(ISSUER_ROLE, issuer), true);
     }
 
+    function test_RevertInitializeWithZeroIssuer() public {
+        RWAToken impl = new RWAToken();
+        vm.expectRevert();
+        new ERC1967Proxy(
+            address(impl),
+            abi.encodeWithSelector(
+                RWAToken.initialize.selector,
+                "x", "X", "asset", "Treasury", address(0)
+            )
+        );
+    }
+
+    // --- Compliance ---
     function test_WhitelistInvestor() public {
         vm.prank(verifier);
         token.whitelistAddress(investor, bytes32(0));
         assertEq(token.isWhitelisted(investor), true);
     }
 
+    function test_RevertWhitelistBlacklisted() public {
+        vm.prank(agent);
+        token.blacklistAddress(investor);
+        vm.prank(verifier);
+        vm.expectRevert("Account is blacklisted");
+        token.whitelistAddress(investor, bytes32(0));
+    }
+
+    // --- Minting ---
     function test_MintTokens() public {
         vm.prank(verifier);
         token.whitelistAddress(investor, bytes32(0));
@@ -77,6 +99,17 @@ contract RWATokenTest is Test {
         vm.stopPrank();
     }
 
+    function test_RevertMintZeroAmount() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+        vm.startPrank(issuer);
+        token.activateAsset();
+        vm.expectRevert("Amount must be > 0");
+        token.mint(investor, 0);
+        vm.stopPrank();
+    }
+
+    // --- Transfers ---
     function test_TransferWithCompliance() public {
         vm.prank(verifier);
         token.whitelistAddress(investor, bytes32(0));
@@ -93,21 +126,6 @@ contract RWATokenTest is Test {
 
         assertEq(token.balanceOf(investor), 500 ether);
         assertEq(token.balanceOf(investor2), 500 ether);
-    }
-
-    function test_NAVUpdate() public {
-        vm.prank(agent);
-        token.updateNAV(1_000_000 * 10**8); // $1M NAV
-
-        assertEq(token.nav(), 1_000_000 * 10**8);
-    }
-
-    function test_AssetLifecycle() public {
-        vm.startPrank(issuer);
-        token.activateAsset();
-        token.matureAsset();
-        token.redeemAsset();
-        vm.stopPrank();
     }
 
     function test_BlacklistPreventsTransfer() public {
@@ -129,27 +147,6 @@ contract RWATokenTest is Test {
         token.transfer(investor2, 100 ether);
     }
 
-    function test_ManagementFee() public {
-        // First mint some shares
-        vm.prank(verifier);
-        token.whitelistAddress(investor, bytes32(0));
-
-        vm.startPrank(issuer);
-        token.activateAsset();
-        token.mint(investor, 1000 ether);
-        vm.stopPrank();
-
-        // Set fee and update NAV
-        vm.prank(issuer);
-        token.setManagementFee(150); // 1.5%
-
-        vm.prank(agent);
-        token.updateNAV(1_000_000 * 10**8);
-
-        assertEq(token.managementFee(), 150);
-        assertGt(token.accruedFees(), 0);
-    }
-
     function test_PausePreventsTransfers() public {
         vm.prank(verifier);
         token.whitelistAddress(investor, bytes32(0));
@@ -167,6 +164,156 @@ contract RWATokenTest is Test {
         token.transfer(investor2, 100 ether);
     }
 
+    // --- NAV ---
+    function test_NAVUpdate() public {
+        vm.prank(issuer);
+        token.activateAsset();
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8); // $1M NAV
+        assertEq(token.nav(), 1_000_000 * 10**8);
+    }
+
+    function test_RevertNAVZero() public {
+        vm.prank(issuer);
+        token.activateAsset();
+        vm.prank(agent);
+        vm.expectRevert("NAV must be > 0");
+        token.updateNAV(0);
+    }
+
+    // --- Asset Lifecycle ---
+    function test_AssetLifecycle() public {
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.matureAsset();
+        token.redeemAsset();
+        vm.stopPrank();
+        assertEq(uint(token.assetState()), uint(RWAToken.AssetState.Redeemed));
+    }
+
+    // --- Management Fee: time-prorated accrual ---
+    function test_ManagementFee_NoTimeNoFees() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        token.setManagementFee(150); // 1.5% per annum
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        // No time has elapsed beyond the same-block updates → no fees accrued.
+        assertEq(token.accruedFees(), 0);
+        assertEq(token.managementFee(), 150);
+    }
+
+    function test_ManagementFee_OneYearAccrual() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        token.setManagementFee(150); // 1.5% per annum
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8); // $1M
+
+        // Advance exactly one year.
+        vm.warp(block.timestamp + 365 days);
+
+        // Trigger accrual via another NAV update.
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        // Expected: 1.5% of $1M = $15,000 = 15_000 * 1e8
+        uint256 expected = (1_000_000 * 10**8 * 150) / 10000;
+        assertEq(token.accruedFees(), expected);
+    }
+
+    function test_ManagementFee_HalfYearAccrual() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        token.setManagementFee(200); // 2% per annum
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        // Advance half a year.
+        vm.warp(block.timestamp + (365 days / 2));
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        // Expected: half of 2% = 1% of $1M = $10,000
+        uint256 expected = (1_000_000 * 10**8 * 200 * (365 days / 2))
+            / (10000 * 365 days);
+        assertEq(token.accruedFees(), expected);
+    }
+
+    function test_ManagementFee_NoCompoundingOnDailyOracle() public {
+        // Regression: v0 charged the full annual fee on every updateNAV().
+        // Confirm that 365 daily NAV pushes yield ~1× annual fee, not 365×.
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        token.setManagementFee(100); // 1% per annum
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        for (uint256 i = 0; i < 365; i++) {
+            vm.warp(block.timestamp + 1 days);
+            vm.prank(agent);
+            token.updateNAV(1_000_000 * 10**8);
+        }
+
+        // Expected: ~1% of $1M = $10,000. Tolerate rounding ≤ 365 wei-USD.
+        uint256 expected = (1_000_000 * 10**8 * 100) / 10000;
+        assertApproxEqAbs(token.accruedFees(), expected, 365);
+    }
+
+    function test_RevertFeeAboveCap() public {
+        vm.prank(issuer);
+        vm.expectRevert("Fee exceeds 5% cap");
+        token.setManagementFee(501);
+    }
+
+    function test_PreviewAccruedFees() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        token.setManagementFee(100);
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        vm.warp(block.timestamp + 365 days);
+
+        uint256 preview = token.previewAccruedFees();
+        uint256 expected = (1_000_000 * 10**8 * 100) / 10000;
+        assertEq(preview, expected);
+        // Real accruedFees is still 0 until a state-changing call.
+        assertEq(token.accruedFees(), 0);
+    }
+
+    // --- Share Price ---
     function test_SharePrice() public {
         vm.prank(verifier);
         token.whitelistAddress(investor, bytes32(0));
@@ -179,9 +326,24 @@ contract RWATokenTest is Test {
         vm.prank(agent);
         token.updateNAV(1_100_000 * 10**8); // $1.1M NAV
 
-        uint256 sharePrice = token.getSharePrice();
-        // NAV = 1,100,000 (8 decimals), shares = 1000e18
-        // sharePrice = (1,100,000 * 10^8 * 10^18) / (1000 * 10^18) = 1,100 * 10^8
-        assertEq(sharePrice, 1100 * 10**8);
+        // NAV = 1,100,000 * 1e8, shares = 1000 * 1e18
+        // sharePrice = (1,100,000 * 1e8 * 1e18) / (1000 * 1e18) = 1,100 * 1e8
+        assertEq(token.getSharePrice(), 1100 * 10**8);
+    }
+
+    function test_PortfolioValue() public {
+        vm.prank(verifier);
+        token.whitelistAddress(investor, bytes32(0));
+
+        vm.startPrank(issuer);
+        token.activateAsset();
+        token.mint(investor, 1000 ether);
+        vm.stopPrank();
+
+        vm.prank(agent);
+        token.updateNAV(1_000_000 * 10**8);
+
+        // Single holder owns 100% → portfolio value = NAV (less fees, which is 0)
+        assertEq(token.getPortfolioValue(investor), 1_000_000 * 10**8);
     }
 }

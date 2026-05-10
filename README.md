@@ -1,198 +1,174 @@
 # RWA Tokenizer
 
-> **Tokenize Real-World Assets at the Speed of AI**
-> Built for solo developers who move faster than institutions.
+A reference implementation of an ERC-3643-style tokenized Real-World Asset
+contract, with on-chain compliance, time-prorated management fees, and a
+Pending → Active → Matured → Redeemed asset lifecycle.
 
-[![Tests](https://github.com/YOUR_USERNAME/rwa-tokenizer/actions/workflows/test.yml/badge.svg)](https://github.com/YOUR_USERNAME/rwa-tokenizer/actions/workflows/test.yml)
-[![Solidity](https://img.shields.io/badge/Solidity-^0.8.20-blue)](https://soliditylang.org/)
+This repository is a **technical reference**, intended for institutions
+evaluating tokenization architectures and for engineering teams that want a
+clean starting point before adding production-grade compliance, oracle, and
+distribution infrastructure.
+
+[![Solidity](https://img.shields.io/badge/Solidity-^0.8.22-blue)](https://soliditylang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![DeepSeek](https://img.shields.io/badge/Powered%20by-DeepSeek-8B5CF6)](https://deepseek.com)
 
 ---
 
-## 🏗️ Architecture
+## Status
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (Next.js)                        │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐  │
-│  │ Dashboard │ │ Portfolio│ │Compliance│ │   Settings   │  │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘  │
-│                     │ Wallet Connect                        │
-├─────────────────────┼───────────────────────────────────────┤
-│              Smart Contracts (Solidity)                     │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │                    RWAToken                           │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────────────────┐  │  │
-│  │  │ ERC-3643 │ │Compliance│ │   NAV & Fees         │  │  │
-│  │  │ Security │ │Whitelist │ │   Management          │  │  │
-│  │  │ Token    │ │Blacklist │ │   Lifecycle           │  │  │
-│  │  └──────────┘ └──────────┘ └──────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                     │ UUPS Proxy                            │
-├─────────────────────┼───────────────────────────────────────┤
-│              Deployment Layer                               │
-│  Ethereum  │  Polygon  │  Arbitrum  │  Optimism             │
-└─────────────────────────────────────────────────────────────┘
-```
+| Item | Status |
+|---|---|
+| Reference implementation | Complete |
+| Unit tests (Foundry) | Complete |
+| Fuzz tests | **Not yet** |
+| Third-party security audit | **Not yet** — see `AUDIT_BRIEF.md` |
+| Production deployment | **Not yet** |
+| Legal structuring (issuer entity, offering memorandum, transfer agent agreement) | Out of scope |
 
-## ✨ Features
+**Do not deploy this contract to manage real assets without a full audit and
+the surrounding legal/operational stack.** See `AUDIT_BRIEF.md` for the
+scoping note we would hand to an auditor.
 
-### Smart Contract
-- **ERC-3643 Compliant** - Security token standard with identity verification
-- **Role-Based Access** - ISSUER, AGENT, VERIFIER roles with granular permissions
-- **Compliance Engine** - On-chain KYC/AML whitelist and blacklist
-- **NAV Tracking** - Real-time Net Asset Value with oracle updates
-- **Fee Management** - Configurable management fees (basis points)
-- **Asset Lifecycle** - Pending → Active → Matured → Redeemed
-- **Emergency Pause** - Circuit breaker for security incidents
-- **Upgradeable** - UUPS proxy pattern for future upgrades
+## Scope
 
-### Frontend Dashboard
-- **Portfolio Overview** - Real-time NAV, share price, total shares
-- **Token Management** - Mint, burn, and manage tokenized assets
-- **Compliance Panel** - KYC verification and whitelist management
-- **Multi-Chain** - Connect to Ethereum, Polygon, Arbitrum, Optimism
-- **Dark Theme** - Professional institutional-grade UI
+The `RWAToken` contract implements:
 
-### AI Acceleration
-- **DeepSeek Prompts** - Generate contracts, APIs, and frontend code
-- **Auto-Fix Loop** - Tests failures automatically analyzed and fixed
-- **Rapid Iteration** - Ship features in hours, not weeks
+- **Compliance enforcement** — whitelist / blacklist with role-separated
+  verification (VERIFIER) and enforcement (AGENT). Every transfer, mint, and
+  burn passes through the compliance check.
+- **Role-based access control** — `ISSUER_ROLE`, `AGENT_ROLE`,
+  `VERIFIER_ROLE`, plus `DEFAULT_ADMIN_ROLE` for upgrades.
+- **NAV tracking** — single-oracle NAV updates with timestamp, denominated in
+  USD with 8 decimals.
+- **Management fee accrual** — time-prorated continuous accrual, capped at
+  500 bps (5%) per annum. Reduces NAV in share-price calculations rather
+  than transferring out, mirroring the standard fund-administrator pattern.
+- **Asset lifecycle** — Pending → Active → Matured → Redeemed, with fee
+  accrual settled on maturity.
+- **Emergency pause** — circuit breaker held by AGENT_ROLE.
+- **UUPS upgradeability** — admin-gated implementation upgrades with event
+  emission.
 
-## 🚀 Quick Start
+## Out of scope
 
-### Prerequisites
-```bash
-# Install Foundry (Solidity compiler & test runner)
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
+The following are deliberately **not** part of this contract. Each is a
+known limitation that institutional deployments should address externally:
 
-# Or via Homebrew
-brew install foundry
-```
+- **Full ERC-3643 modular compliance.** The whitelist/blacklist is a
+  simplified compliance surface. A production deployment needs an Identity
+  Registry, a Claim Issuer Registry, and pluggable Compliance modules
+  (transfer restrictions by jurisdiction, holding limits, lock-ups).
+- **Production-grade NAV oracle.** This contract trusts a single
+  `AGENT_ROLE` address. Production should source NAV from Chainlink, a
+  fund-administrator-signed multi-sig, or a NAV oracle with attestation.
+- **Dividend / coupon distribution.** Distribution belongs in a separate
+  contract (Merkle distributor or per-share pull-claim). Embedding it in
+  the token contract is an anti-pattern — see Centrifuge, Tokeny, and the
+  ERC-3643 reference architecture.
+- **Forced transfers / recovery.** Required by most security-token
+  jurisdictions (court order, lost-key recovery). Add via a Recovery
+  module before mainnet.
+- **Transfer agent and registrar integration.** Off-chain investor records
+  and corporate actions are out of scope.
 
-### Setup
-```bash
-git clone https://github.com/YOUR_USERNAME/rwa-tokenizer.git
-cd rwa-tokenizer
-
-# Install dependencies
-make setup
-
-# Run tests
-make test
-
-# Start frontend
-make frontend
-```
-
-### Deploy to Testnet
-```bash
-# 1. Set up your .env file
-cp .env.example .env
-# Edit .env with your private key and RPC URL
-
-# 2. Deploy
-make deploy NETWORK=sepolia
-```
-
-## 📊 Test Results
-
-```
-Ran 11 tests for test/RWAToken.t.sol:RWATokenTest
-[PASS] test_AssetLifecycle()           (gas: 49151)
-[PASS] test_BlacklistPreventsTransfer() (gas: 201280)
-[PASS] test_Initialization()           (gas: 43974)
-[PASS] test_ManagementFee()            (gas: 260035)
-[PASS] test_MintTokens()               (gas: 158609)
-[PASS] test_NAVUpdate()                (gas: 68467)
-[PASS] test_PausePreventsTransfers()   (gas: 188476)
-[PASS] test_RevertMintToNonWhitelisted()(gas: 52530)
-[PASS] test_SharePrice()               (gas: 214000)
-[PASS] test_TransferWithCompliance()   (gas: 222270)
-[PASS] test_WhitelistInvestor()        (gas: 51498)
-Suite result: ok. 11 passed; 0 failed
-```
-
-## 🎯 Use Cases
-
-| Asset Type | Example | Tokenization Benefit |
-|------------|---------|---------------------|
-| **Treasury Bonds** | US Treasury Bills | 24/7 trading, fractional ownership |
-| **Corporate Bonds** | Investment Grade Debt | Automated coupon payments |
-| **Real Estate** | Commercial Properties | Liquidity, fractional ownership |
-| **Private Credit** | SME Loans | Secondary market, transparency |
-| **Funds** | Money Market Funds | Instant settlement, lower fees |
-
-## 🤖 DeepSeek Integration
-
-Generate production-ready code instantly:
-
-```bash
-# Generate a new contract feature
-./scripts/deepseek-generate.sh prompts/contract-generator.md contracts/src
-
-# Generate API backend
-./scripts/deepseek-generate.sh prompts/api-generator.md api
-
-# Generate frontend components
-./scripts/deepseek-generate.sh prompts/frontend-generator.md frontend
-```
-
-## 🔧 Smart Contract API
+## Smart Contract API
 
 ### Roles
-```solidity
-ISSUER_ROLE  // Mint/burn tokens, manage asset lifecycle
-AGENT_ROLE   // Update NAV, pause/unpause, blacklist
-VERIFIER_ROLE // Whitelist addresses, verify identity
-```
 
-### Key Functions
+| Role | Capabilities |
+|---|---|
+| `ISSUER_ROLE` | Mint, burn, set management fee, advance asset lifecycle. |
+| `AGENT_ROLE` | Update NAV, pause/unpause, blacklist accounts. |
+| `VERIFIER_ROLE` | Whitelist accounts (post-KYC). |
+| `DEFAULT_ADMIN_ROLE` | Authorize implementation upgrades; grant/revoke roles. |
+
+### Key functions
+
 ```solidity
 // Compliance
-function whitelistAddress(address account, bytes32 claim)
-function blacklistAddress(address account)
+function whitelistAddress(address account, bytes32 claim)   // VERIFIER
+function blacklistAddress(address account)                  // AGENT
 
-// Token Operations
-function mint(address to, uint256 amount)
-function burn(address from, uint256 amount)
+// Issuance
+function mint(address to, uint256 amount)                   // ISSUER
+function burn(address from, uint256 amount)                 // ISSUER (forced redemption)
 
-// NAV & Fees
-function updateNAV(uint256 _nav)
-function setManagementFee(uint256 _fee)
+// NAV & fees
+function updateNAV(uint256 _nav)                            // AGENT
+function setManagementFee(uint256 _feeBps)                  // ISSUER (≤ 500 bps)
+function previewAccruedFees() view returns (uint256)
 
-// Asset Lifecycle
-function activateAsset()
-function matureAsset()
-function redeemAsset()
+// Lifecycle
+function activateAsset()                                    // ISSUER
+function matureAsset()                                      // ISSUER
+function redeemAsset()                                      // ISSUER
 
 // Views
-function getSharePrice() view returns (uint256)
+function getSharePrice() view returns (uint256)             // USD, 8 decimals
 function getPortfolioValue(address investor) view returns (uint256)
 ```
 
-## 🚢 Deployment
+### Decimal convention
 
-### Supported Networks
-| Network | Chain ID | Status |
-|---------|----------|--------|
-| Ethereum Sepolia | 11155111 | Test |
-| Ethereum Mainnet | 1 | Production |
-| Polygon | 137 | Production |
-| Arbitrum | 42161 | Production |
-| Optimism | 10 | Production |
+| Value | Decimals |
+|---|---|
+| `nav`, `accruedFees`, `getSharePrice()`, `getPortfolioValue()` | 8 (USD; 1.00 USD = `1e8`) |
+| `totalShares`, `balanceOf` | 18 (ERC-20 wei) |
+| `managementFee` | basis points (`100` = 1%) per annum |
 
-## 📄 License
+## Build and test
 
-MIT - Build on it, ship it, make money.
+```bash
+# Install Foundry
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
 
-## 🙋‍♂️ Built By
+# Build
+cd contracts
+forge build
 
-A solo developer with DeepSeek AI acceleration.
-Institutions move slow. I move fast.
+# Test
+forge test -vv
+```
 
----
+The test suite covers initialization, compliance enforcement, lifecycle
+transitions, time-prorated fee accrual (including a 365-daily-update
+regression for the v0 fee-compounding bug), share-price math, and pause.
 
-**Star this repo if you're building the future of finance.** ⭐
+## Deployment
+
+Deployment scripts are illustrative — they target Sepolia and the testnets
+listed in `.env.example`. **Mainnet deployment is intentionally not wired
+up in this repo.** Mainnet deployment of a security-token contract should
+go through:
+
+1. Third-party audit + remediation
+2. Issuer-entity ownership of the proxy admin key (multi-sig or HSM)
+3. Compliance modules wired before activation
+4. Operational runbook for pause, NAV updates, and recovery
+
+See `SECURITY.md` for the disclosure policy.
+
+## Repository layout
+
+```
+contracts/        Solidity sources + Foundry config
+  src/            RWAToken.sol
+  test/           RWAToken.t.sol
+frontend/         Reference Next.js dashboard (illustrative only)
+scripts/          Deployment + iteration helpers
+SECURITY.md       Disclosure policy
+AUDIT_BRIEF.md    Threat model, known limitations, audit scope
+```
+
+## License
+
+MIT. See `LICENSE`.
+
+## Disclosures
+
+This implementation was developed with assistance from AI coding tools
+(Claude, DeepSeek). All code has been reviewed by a human author; no
+portion of this repository should be construed as audited or production-
+ready until an independent security audit is complete (see
+`AUDIT_BRIEF.md`).
