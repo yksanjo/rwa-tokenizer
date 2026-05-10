@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-lib/
 
 # Build outputs
 out/
@@ -43,4 +42,3 @@ coverage.json
 # Temp
 tmp/
 temp/
-contracts/lib/
