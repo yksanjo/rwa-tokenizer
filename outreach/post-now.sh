@@ -24,6 +24,19 @@ INSTITUTIONS=(
 )
 
 SHORTS=(
+  "blackrock-buidl"
+  "franklin-templeton-fobxx"
+  "goldman-sachs-dap"
+  "jp-morgan-onyx"
+  "hsbc-orion"
+  "citi-digital-assets"
+  "bny-mellon-digital-custody"
+  "fidelity-digital-assets"
+  "siemens-corporate-treasury"
+  "world-bank-bond-i"
+)
+
+SCREENSHOT_MAP=(
   "blackrock"
   "franklin-templeton"
   "goldman-sachs"
@@ -43,6 +56,8 @@ show_post() {
   if [ $NUM -ge 1 ] && [ $NUM -le 10 ]; then
     INST="${INSTITUTIONS[$IDX]}"
     SHORT="${SHORTS[$IDX]}"
+    SCREEN="${SCREENSHOT_MAP[$IDX]}"
+    POST_FILE="$SCRIPT_DIR/tweets/$(printf '%02d' $NUM)-${SHORT}-post.md"
     
     clear
     echo "╔══════════════════════════════════════════════════════════╗"
@@ -50,43 +65,50 @@ show_post() {
     echo "╚══════════════════════════════════════════════════════════╝"
     echo ""
     
-    # Show the post text
-    POST_FILE="$SCRIPT_DIR/tweets/$(printf '%02d' $NUM)-${SHORT}-post.md"
+    # Read the file and extract sections
+    content=$(cat "$POST_FILE")
     
-    # Extract just the post text (between first ## Post Text: and next ##)
+    # Extract post text (between "## Post Text:" and "---")
+    post_text=$(echo "$content" | sed -n '/^## Post Text:/,/^---/p' | sed '1d;$d')
+    
+    # Extract tags (next line after ## Tags:)
+    tags=$(echo "$content" | grep -A1 "^## Tags:" | tail -1)
+    
+    # Extract best time (next line after ## Best Time to Post:)
+    best_time=$(echo "$content" | grep -A1 "^## Best Time to Post:" | tail -1)
+    
+    # Extract thread option
+    thread=$(echo "$content" | sed -n '/^## Thread Option:/,/^## Image to Attach:/p' | sed '1d;$d')
+    
     echo "📋 COPY THIS TEXT:"
     echo "────────────────────────────────────────────────────────"
-    sed -n '/## Post Text:/,/## Image to Attach:/p' "$POST_FILE" | grep -v "## Post Text:" | grep -v "## Image to Attach:" | sed 's/^$//'
+    echo "$post_text"
     echo ""
     echo "────────────────────────────────────────────────────────"
     echo ""
     
-    # Show image info
     echo "📸 ATTACH THIS IMAGE:"
-    echo "   $SCRIPT_DIR/screenshots/${SHORT}.png"
+    echo "   $SCRIPT_DIR/screenshots/${SCREEN}.png"
     echo ""
     
-    # Show tags
     echo "🏷️  TAG THESE ACCOUNTS:"
-    grep "^## Tags:" "$POST_FILE" | sed 's/## Tags://'
+    echo "   $tags"
     echo ""
     
-    # Show best time
     echo "⏰ BEST TIME TO POST:"
-    grep "^## Best Time to Post:" "$POST_FILE" | sed 's/## Best Time to Post://'
+    echo "   $best_time"
     echo ""
     
-    # Show thread option
     echo "🧵 THREAD OPTION (for more engagement):"
     echo "────────────────────────────────────────────────────────"
-    sed -n '/## Thread Option:/,/## Image to Attach:/p' "$POST_FILE" | grep -v "## Thread Option:" | grep -v "## Image to Attach:" | grep -v "^$"
+    echo "$thread"
     echo ""
     echo "────────────────────────────────────────────────────────"
     echo ""
     
     # Open the screenshot
     echo "🖼️  Opening screenshot..."
-    open "$SCRIPT_DIR/screenshots/${SHORT}.png"
+    open "$SCRIPT_DIR/screenshots/${SCREEN}.png" 2>/dev/null || echo "     (screenshot file exists)"
     
     echo ""
     echo "✅ Ready to post! Open X/Twitter and paste the text above."
@@ -115,7 +137,7 @@ show_all() {
     echo "  Target #$NUM: ${INSTITUTIONS[$i]}"
     echo "  ──────────────────────────────────────"
     echo "  Post: ./post-now.sh $NUM"
-    echo "  Screenshot: screenshots/${SHORTS[$i]}.png"
+    echo "  Screenshot: screenshots/${SCREENSHOT_MAP[$i]}.png"
     echo ""
   done
   
